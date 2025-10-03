@@ -1,26 +1,9 @@
-// src/pages/OrderDetailPage.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  Box,
-  Breadcrumbs,
-  Typography,
-  Paper,
-  Chip,
-  Grid,
-  Divider,
-  Avatar,
-  Card,
-  CardContent,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-  TableContainer,
-  Stack,
-  Skeleton,
-  Alert,
+  Box, Breadcrumbs, Typography, Paper, Chip, Grid, Divider, Avatar,
+  Card, CardContent, Table, TableBody, TableCell, TableHead, TableRow,
+  TableContainer, Stack, Skeleton, Alert
 } from '@mui/material';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import StorefrontIcon from '@mui/icons-material/Storefront';
@@ -28,11 +11,9 @@ import PersonIcon from '@mui/icons-material/Person';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import CreditCardIcon from '@mui/icons-material/CreditCard';
 import LocalMallIcon from '@mui/icons-material/LocalMall';
-
 import { db } from '../firebase/config';
 import { doc, onSnapshot } from 'firebase/firestore';
 
-// --- Helpers ---
 const currency = (n) =>
   typeof n === 'number'
     ? `L ${n.toFixed(2)}`
@@ -42,7 +23,6 @@ const currency = (n) =>
 
 const formatDateTime = (ts) => {
   if (!ts) return '-';
-  // ts puede ser Timestamp de Firestore o Date/number
   const d =
     typeof ts?.toDate === 'function'
       ? ts.toDate()
@@ -109,9 +89,8 @@ const Badge = ({ label, value, icon }) => (
   </Stack>
 );
 
-// --- Main Page ---
 export default function OrderDetailPage() {
-  const { id } = useParams(); // ID del documento en Firestore (orders/{id})
+  const { id } = useParams();
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -139,11 +118,10 @@ export default function OrderDetailPage() {
     return () => unsub();
   }, [id]);
 
-  const items = useMemo(() => order?.itemsOrder || [], [order]);
+  const items = useMemo(() => Array.isArray(order?.itemsOrder) ? order.itemsOrder : [], [order]);
   const shippingAddress = order?.shippingAddress || {};
   const datosRTN = order?.datosRTN || {};
 
-  // Totales con fallback por si vienen como string
   const subTotal = Number(order?.subTotal ?? 0);
   const shipping = Number(order?.shipping ?? 0);
   const serviceFee = Number(order?.serviceFee ?? 0);
@@ -154,15 +132,13 @@ export default function OrderDetailPage() {
 
   return (
     <Box p={2}>
-      {/* Breadcrumbs */}
       <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />} sx={{ mb: 2 }}>
-        <Link to="/orders" style={{ textDecoration: 'none' }}>
+        <Link to="/ordenes" style={{ textDecoration: 'none' }}>
           <Typography color="text.secondary">Órdenes</Typography>
         </Link>
         <Typography color="text.primary">Detalle</Typography>
       </Breadcrumbs>
 
-      {/* Header */}
       <Paper sx={{ p: 2, mb: 2 }}>
         {loading ? (
           <Stack direction="row" spacing={2} alignItems="center">
@@ -186,25 +162,17 @@ export default function OrderDetailPage() {
               <Stack direction="row" spacing={1} flexWrap="wrap">
                 <EstadoChip estadoText={order?.estadoText} estadoBool={order?.estadoBool} />
                 <MetodoChip metodo={order?.metodoDePago} />
-                <Chip
-                  label={order?.nombreCiudad || '—'}
-                  size="small"
-                  variant="outlined"
-                />
+                <Chip label={order?.nombreCiudad || '—'} size="small" variant="outlined" />
               </Stack>
             </Grid>
             <Grid item xs />
             <Grid item>
               <Stack spacing={0.5} alignItems="flex-end">
-                <Typography variant="body2" color="text.secondary">
-                  Creada:
-                </Typography>
+                <Typography variant="body2" color="text.secondary">Creada:</Typography>
                 <Typography variant="body2" fontWeight={600}>
                   {formatDateTime(order?.createdAt)}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  ID doc: {order?.id}
-                </Typography>
+                <Typography variant="caption" color="text.secondary">ID doc: {order?.id}</Typography>
                 {order?.idOrderText && (
                   <Typography variant="caption" color="text.secondary">
                     Payment UUID: {order?.idOrderText}
@@ -216,17 +184,13 @@ export default function OrderDetailPage() {
         )}
       </Paper>
 
-      {/* Top info cards */}
       <Grid container spacing={2}>
-        {/* Negocio */}
         <Grid item xs={12} md={4}>
           <Card>
             <CardContent>
               <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
                 <StorefrontIcon />
-                <Typography variant="subtitle1" fontWeight={700}>
-                  Negocio
-                </Typography>
+                <Typography variant="subtitle1" fontWeight={700}>Negocio</Typography>
               </Stack>
               {loading ? (
                 <>
@@ -247,15 +211,12 @@ export default function OrderDetailPage() {
           </Card>
         </Grid>
 
-        {/* Cliente */}
         <Grid item xs={12} md={4}>
           <Card>
             <CardContent>
               <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
                 <PersonIcon />
-                <Typography variant="subtitle1" fontWeight={700}>
-                  Cliente
-                </Typography>
+                <Typography variant="subtitle1" fontWeight={700}>Cliente</Typography>
               </Stack>
               {loading ? (
                 <>
@@ -272,18 +233,10 @@ export default function OrderDetailPage() {
                   {order?.conRTN && (
                     <>
                       <Divider sx={{ my: 1 }} />
-                      <Typography variant="caption" color="text.secondary">
-                        Facturación RTN
-                      </Typography>
-                      <Typography variant="body2">
-                        {datosRTN?.nombreRTN || '—'}
-                      </Typography>
-                      <Typography variant="body2">
-                        RTN: {datosRTN?.numeroRTN || '—'}
-                      </Typography>
-                      <Typography variant="body2">
-                        Correo: {datosRTN?.correoElectronico || '—'}
-                      </Typography>
+                      <Typography variant="caption" color="text.secondary">Facturación RTN</Typography>
+                      <Typography variant="body2">{datosRTN?.nombreRTN || '—'}</Typography>
+                      <Typography variant="body2">RTN: {datosRTN?.numeroRTN || '—'}</Typography>
+                      <Typography variant="body2">Correo: {datosRTN?.correoElectronico || '—'}</Typography>
                     </>
                   )}
                 </Stack>
@@ -292,15 +245,12 @@ export default function OrderDetailPage() {
           </Card>
         </Grid>
 
-        {/* Entrega / Pago */}
         <Grid item xs={12} md={4}>
           <Card>
             <CardContent>
               <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
                 <LocalShippingIcon />
-                <Typography variant="subtitle1" fontWeight={700}>
-                  Entrega & Pago
-                </Typography>
+                <Typography variant="subtitle1" fontWeight={700}>Entrega & Pago</Typography>
               </Stack>
               {loading ? (
                 <>
@@ -312,18 +262,10 @@ export default function OrderDetailPage() {
                   <Badge label="Entrega" value={order?.formaDeEntrega} icon={<></>} />
                   <Badge label="Método de pago" value={order?.metodoDePago} icon={<CreditCardIcon fontSize="small" />} />
                   {order?.tarjetaUsada && (
-                    <Typography variant="body2">
-                      Tarjeta: **** **** **** {order?.tarjetaUsada}
-                    </Typography>
+                    <Typography variant="body2">Tarjeta: **** **** **** {order?.tarjetaUsada}</Typography>
                   )}
-                  {order?.conEntregaPrioritaria && (
-                    <Chip size="small" color="warning" label="Entrega prioritaria" />
-                  )}
-                  {order?.note && (
-                    <Typography variant="body2">
-                      <strong>Nota:</strong> {order?.note}
-                    </Typography>
-                  )}
+                  {order?.conEntregaPrioritaria && <Chip size="small" color="warning" label="Entrega prioritaria" />}
+                  {order?.note && <Typography variant="body2"><strong>Nota:</strong> {order?.note}</Typography>}
                 </Stack>
               )}
             </CardContent>
@@ -331,7 +273,6 @@ export default function OrderDetailPage() {
         </Grid>
       </Grid>
 
-      {/* Dirección */}
       <Paper sx={{ p: 2, mt: 2 }}>
         <Typography variant="subtitle1" fontWeight={700} gutterBottom>
           Dirección de {order?.formaDeEntrega === 'Domicilio' ? 'envío' : 'recogido'}
@@ -346,37 +287,20 @@ export default function OrderDetailPage() {
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
               <Stack spacing={0.5}>
-                <Typography variant="body2">
-                  <strong>Alias:</strong> {shippingAddress?.alias || '—'}
-                </Typography>
-                <Typography variant="body2">
-                  <strong>Ciudad:</strong> {shippingAddress?.ciudad || order?.nombreCiudad || '—'}
-                </Typography>
-                <Typography variant="body2">
-                  <strong>Dirección:</strong> {shippingAddress?.fullAddress || '—'}
-                </Typography>
-                {shippingAddress?.colonia && (
-                  <Typography variant="body2">
-                    <strong>Colonia:</strong> {shippingAddress?.colonia}
-                  </Typography>
-                )}
-                {shippingAddress?.telefono && (
-                  <Typography variant="body2">
-                    <strong>Teléfono:</strong> {shippingAddress?.telefono}
-                  </Typography>
-                )}
+                <Typography variant="body2"><strong>Alias:</strong> {shippingAddress?.alias || '—'}</Typography>
+                <Typography variant="body2"><strong>Ciudad:</strong> {shippingAddress?.ciudad || order?.nombreCiudad || '—'}</Typography>
+                <Typography variant="body2"><strong>Dirección:</strong> {shippingAddress?.fullAddress || '—'}</Typography>
+                {shippingAddress?.colonia && <Typography variant="body2"><strong>Colonia:</strong> {shippingAddress.colonia}</Typography>}
+                {shippingAddress?.telefono && <Typography variant="body2"><strong>Teléfono:</strong> {shippingAddress.telefono}</Typography>}
               </Stack>
             </Grid>
           </Grid>
         )}
       </Paper>
 
-      {/* Items */}
       <Paper sx={{ p: 2, mt: 2 }}>
         <Stack direction="row" spacing={1} alignItems="center" mb={1}>
-          <Typography variant="subtitle1" fontWeight={700}>
-            Ítems del pedido
-          </Typography>
+          <Typography variant="subtitle1" fontWeight={700}>Ítems del pedido</Typography>
           <Chip size="small" label={`${items.length} ítem(s)`} />
         </Stack>
 
@@ -401,44 +325,32 @@ export default function OrderDetailPage() {
                     <TableCell>{it?.cantidad ?? 1}</TableCell>
                     <TableCell>
                       <Stack spacing={0.5}>
-                        <Typography variant="body2" fontWeight={600}>
-                          {it?.nombreProducto || '—'}
-                        </Typography>
-                        {/* Modificadores */}
+                        <Typography variant="body2" fontWeight={600}>{it?.nombreProducto || '—'}</Typography>
                         {!!(it?.modificadoresSeleccionados?.length) && (
                           <Typography variant="caption" color="text.secondary">
                             Modificadores: {it.modificadoresSeleccionados.map((m) => m?.nombre || m).join(', ')}
                           </Typography>
                         )}
-                        {/* Extras */}
                         {!!(it?.extrasSeleccionados?.length) && (
                           <Typography variant="caption" color="text.secondary">
                             Extras: {it.extrasSeleccionados.map((e) => e?.nombre || e).join(', ')}
                           </Typography>
                         )}
                         {it?.notasItem && (
-                          <Typography variant="caption" color="text.secondary">
-                            Nota: {it.notasItem}
-                          </Typography>
+                          <Typography variant="caption" color="text.secondary">Nota: {it.notasItem}</Typography>
                         )}
                       </Stack>
                     </TableCell>
                     <TableCell>{currency(it?.precioUnitarioCalculadoApp ?? 0)}</TableCell>
                     <TableCell>{currency(it?.subtotalItemCalculadoApp ?? 0)}</TableCell>
-                    <TableCell align="right">
-                      {currency(it?.precioUnitarioCalculadoTienda ?? 0)}
-                    </TableCell>
-                    <TableCell align="right">
-                      {currency(it?.subtotalItemCalculadoTienda ?? 0)}
-                    </TableCell>
+                    <TableCell align="right">{currency(it?.precioUnitarioCalculadoTienda ?? 0)}</TableCell>
+                    <TableCell align="right">{currency(it?.subtotalItemCalculadoTienda ?? 0)}</TableCell>
                   </TableRow>
                 ))}
                 {items.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6}>
-                      <Typography variant="body2" color="text.secondary">
-                        No hay ítems en este pedido.
-                      </Typography>
+                      <Typography variant="body2" color="text.secondary">No hay ítems en este pedido.</Typography>
                     </TableCell>
                   </TableRow>
                 )}
@@ -448,13 +360,10 @@ export default function OrderDetailPage() {
         )}
       </Paper>
 
-      {/* Totales */}
       <Paper sx={{ p: 2, mt: 2 }}>
         <Grid container>
           <Grid item xs={12} md={6}>
-            <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-              Resumen de pago
-            </Typography>
+            <Typography variant="subtitle1" fontWeight={700} gutterBottom>Resumen de pago</Typography>
             {loading ? (
               <Skeleton variant="rectangular" height={120} />
             ) : (
@@ -462,17 +371,9 @@ export default function OrderDetailPage() {
                 <RowAmount label="Subtotal" value={currency(subTotal)} />
                 <RowAmount label="Envío" value={currency(shipping)} />
                 <RowAmount label="Service fee" value={currency(serviceFee)} />
-                {order?.conEntregaPrioritaria && (
-                  <RowAmount label="Entrega prioritaria" value={currency(priorityDelivery)} />
-                )}
+                {order?.conEntregaPrioritaria && <RowAmount label="Entrega prioritaria" value={currency(priorityDelivery)} />}
                 {tip > 0 && <RowAmount label="Propina" value={currency(tip)} />}
-                {discount > 0 && (
-                  <RowAmount
-                    label="Descuento"
-                    value={`- ${currency(discount)}`}
-                    valueColor="error.main"
-                  />
-                )}
+                {discount > 0 && <RowAmount label="Descuento" value={`- ${currency(discount)}`} valueColor="error.main" />}
                 <Divider sx={{ my: 1 }} />
                 <RowAmount label="Total" value={currency(totalApp)} strong />
               </Stack>
@@ -481,12 +382,9 @@ export default function OrderDetailPage() {
         </Grid>
       </Paper>
 
-      {/* Estado filtros (chips) */}
       {!loading && (order?.estadoFiltros?.length > 0) && (
         <Paper sx={{ p: 2, mt: 2 }}>
-          <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-            Filtros de estado
-          </Typography>
+          <Typography variant="subtitle1" fontWeight={700} gutterBottom>Filtros de estado</Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap">
             {order.estadoFiltros.map((e, i) => (
               <Chip key={`${e}-${i}`} size="small" label={String(e)} />
@@ -501,16 +399,8 @@ export default function OrderDetailPage() {
 function RowAmount({ label, value, strong = false, valueColor }) {
   return (
     <Stack direction="row" justifyContent="space-between" alignItems="center">
-      <Typography variant="body2" color="text.secondary">
-        {label}
-      </Typography>
-      <Typography
-        variant="body2"
-        fontWeight={strong ? 800 : 600}
-        color={valueColor}
-      >
-        {value}
-      </Typography>
+      <Typography variant="body2" color="text.secondary">{label}</Typography>
+      <Typography variant="body2" fontWeight={strong ? 800 : 600} color={valueColor}>{value}</Typography>
     </Stack>
   );
 }
