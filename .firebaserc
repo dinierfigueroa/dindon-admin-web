@@ -1,0 +1,16 @@
+{
+  "projects": {
+    "default": "dindonexpress1",
+    " ": "dindonexpress1"
+  },
+  "targets": {
+    "dindonexpress1": {
+      "hosting": {
+        "admin": [
+          "ddadmin-ef4493boaa"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
