@@ -333,8 +333,9 @@ export default function OrderDetailPage() {
         collection(db, 'users'),
         where('role', '==', 'driver'),
         where('ciudad', '==', nombreCiudad),
-        where('estado_driver', '==', 'true'),
-        orderBy('displayName', 'asc')
+        where('estado_driver', '==', true),
+        where('es_repartidor', '==', true),
+        orderBy('display_name', 'asc')
       );
       const snap = await getDocs(q);
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -354,7 +355,7 @@ export default function OrderDetailPage() {
     }
     await updateOrder({
       driverId: driver.id,
-      driverName: driver.displayName || driver.name || driver.nombre || driver.email || 'Driver',
+      driverName: driver.display_name || driver.displayName || driver.name || driver.nombre || driver.email || 'Driver',
       driverCity: driver.ciudad || nombreCiudad,
     });
     setDriversOpen(false);
@@ -426,7 +427,10 @@ export default function OrderDetailPage() {
   };
 
   const savePagoDriver = async () => {
-    await updateOrder({ pagoDriver: pagoDriverLocal });
+    const n = Number(pagoDriverLocal);
+    const value = Number.isFinite(n) ? n : (pagoDriverLocal ?? '');
+    await updateOrder({ pagoDriver: value });
+    alert('Pago al driver guardado');
   };
 
   // ===== Visibility logic for buttons =====
@@ -838,7 +842,7 @@ export default function OrderDetailPage() {
             >
               {drivers.map((d) => (
                 <MenuItem key={d.id} value={d.id}>
-                  {d.displayName || d.name || d.nombre || d.email || d.id}
+                  {d.display_name || d.displayName || d.name || d.nombre || d.email || d.id}
                 </MenuItem>
               ))}
             </Select>
