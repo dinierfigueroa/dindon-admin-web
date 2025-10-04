@@ -120,7 +120,9 @@ function SortableBusinessRow({ business }) {
         </IconButton>
         <IconButton
           title="Gestionar Categorías"
-          onClick={(e) => { e.stopPropagation(); navigate(`/negocios/${business.uuidEmpresa}/categorias`); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigate(`/negocios/${business.uuidEmpresa}/categorias`); }}
         >
           <CategoryIcon />
         </IconButton>

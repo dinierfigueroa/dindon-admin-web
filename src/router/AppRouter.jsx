@@ -20,6 +20,8 @@ import BusinessesPage from '../pages/BusinessesPage';
 import ProductsPage from '../pages/ProductsPage';
 import CreateProductPage from '../pages/CreateProductPage';
 import EditProductPage from '../pages/EditProductPage';
+import CategoriesPage from '../pages/CategoriesPage'; // <<< NUEVO
+
 
 export default function AppRouter() {
   return (
@@ -41,8 +43,11 @@ export default function AppRouter() {
               <Route path="/marketplace" element={<MarketplacePage />} />
               <Route path="/negocios" element={<BusinessesPage />} />
               <Route path="/negocios/:uuidEmpresa/productos" element={<ProductsPage />} />
+              <Route path="/negocios/:uuidEmpresa/productos/nuevo" element={<CreateProductPage />} />
+              <Route path="/negocios/:uuidEmpresa/productos/:productId/editar" element={<EditProductPage />} />
               <Route path="/productos/nuevo" element={<CreateProductPage />} />
               <Route path="/productos/:productId/editar" element={<EditProductPage />} />
+              <Route path="/negocios/:uuidEmpresa/categorias" element={<CategoriesPage />} />
 
               {/* Ruta por defecto del dashboard */}
               <Route path="*" element={<OrdersPage />} />
