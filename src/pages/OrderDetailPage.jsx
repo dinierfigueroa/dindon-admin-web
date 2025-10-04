@@ -4,7 +4,7 @@ import { useParams, Link } from 'react-router-dom';
 import {
   Box, Breadcrumbs, Typography, Paper, Chip, Grid, Divider, Avatar,
   Card, CardContent, Table, TableBody, TableCell, TableHead, TableRow,
-  TableContainer, Stack, Skeleton, Alert, Button, IconButton, TextField,
+  TableContainer, Stack, Skeleton, Alert, Button, TextField,
   Dialog, DialogTitle, DialogContent, DialogActions, MenuItem, Select,
   FormControl, InputLabel
 } from '@mui/material';
@@ -23,14 +23,13 @@ import SendIcon from '@mui/icons-material/Send';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import DirectionsBikeIcon from '@mui/icons-material/DirectionsBike';
-import { getFunctions, httpsCallable } from 'firebase/functions';
 
-// Firebase
 import { db } from '../firebase/config';
 import {
   doc, onSnapshot, updateDoc, Timestamp,
-  collection, getDocs, query, where, orderBy, addDoc, serverTimestamp
+  collection, getDocs, query, where, orderBy, addDoc, serverTimestamp, limit
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // ===== Helpers =====
 const currency = (n) =>
@@ -132,16 +131,21 @@ export default function OrderDetailPage() {
   // Dialogs
   const [editOpen, setEditOpen] = useState(false);
   const [itemsDraft, setItemsDraft] = useState([]);
+
   const [driversOpen, setDriversOpen] = useState(false);
   const [drivers, setDrivers] = useState([]);
   const [driverSel, setDriverSel] = useState('');
   const [pagoDriverLocal, setPagoDriverLocal] = useState('');
 
+  // Búsqueda de productos en el diálogo de ítems
+  const [prodSearch, setProdSearch] = useState('');
+  const [prodResults, setProdResults] = useState([]);
+  const [searchingProd, setSearchingProd] = useState(false);
 
+  // Cloud Functions (para notificaciones)
   const functions = getFunctions();
   const sendStoreNotification = httpsCallable(functions, 'sendStoreNotification');
   const sendUserNotification  = httpsCallable(functions, 'sendUserNotification');
-
 
   // Load order realtime
   useEffect(() => {
@@ -174,7 +178,6 @@ export default function OrderDetailPage() {
     [order]
   );
   const shippingAddress = order?.shippingAddress || {};
-  const datosRTN = order?.datosRTN || {};
   const nombreCiudad = order?.nombreCiudad || '';
 
   // Totales y ganancia
@@ -211,67 +214,43 @@ export default function OrderDetailPage() {
     }
   };
 
-  // Notificación a la tienda: crea un doc en "notifications" para que tu backend/CF lo envíe como push
-  const notifyStoreNewOrder = async () => {
-    try {
-      const tiendaIdText = order?.tiendaIdText;
-      if (!tiendaIdText) return;
-
-      const q = query(collection(db, 'users'), where('uuidEmpresa', '==', tiendaIdText));
-      const snap = await getDocs(q);
-      const usersTienda = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      const title = 'Nuevo pedido';
-      const body = `Tienes un nuevo pedido #${order?.numeroDeOrden || ''}`;
-
-      // Puedes cambiar a subcolección users/{id}/notifications si ya tienes CF escuchando ahí
-      const batchPromises = usersTienda.map(u =>
-        addDoc(collection(db, 'notifications'), {
-          userId: u.id,
-          title,
-          body,
-          orderId: id,
-          tiendaIdText,
-          createdAt: serverTimestamp(),
-          read: false,
-          type: 'ORDER_CONFIRMED',
-        })
-      );
-      await Promise.all(batchPromises);
-    } catch (err) {
-      console.error('No se pudo crear la notificación de tienda:', err);
-    }
-  };
-
   const confirmarPedido = async () => {
     await updateOrder({
       estadoText: 'Confirmado',
       horaConfirmado: Timestamp.now(),
     });
-    // Notificar a la tienda
-    await sendStoreNotification({
-      orderId: id,
-      title: 'Nuevo pedido',
-      body: `Pedido #${order?.numeroDeOrden || ''} confirmado`,
-    });
+    try {
+      await sendStoreNotification({
+        orderId: id,
+        title: 'Nuevo pedido',
+        body: `Pedido #${order?.numeroDeOrden || ''} confirmado`,
+      });
+    } catch (e) {
+      console.warn('No se pudo disparar la notificación a tienda:', e);
+    }
   };
 
-  const uidCliente = order?.userId || order?.userRef?.id || order?.uid;
   const procesarPedido = async () => {
     await updateOrder({
       estadoText: 'En Proceso',
       horaEnProceso: Timestamp.now(),
     });
-    await sendUserNotification({
-      userId: uidCliente,
-      title: 'Tu pedido está en proceso',
-      body: `Pedido #${order?.numeroDeOrden || ''} está en preparación.`,
-      dataPayload: { orderId: id, status: 'EN_PROCESO' },
-    });
+    try {
+      const uidCliente = order?.userId || order?.userRef?.id || order?.uid;
+      if (uidCliente) {
+        await sendUserNotification({
+          userId: uidCliente,
+          title: 'Tu pedido está en proceso',
+          body: `Pedido #${order?.numeroDeOrden || ''} está en preparación.`,
+          dataPayload: { orderId: id, status: 'EN_PROCESO' },
+        });
+      }
+    } catch (e) {
+      console.warn('No se pudo notificar al cliente (en proceso):', e);
+    }
   };
 
   const despacharPedido = async () => {
-    // Solo marca la hora de despacho.
     await updateOrder({
       horaDespachado: Timestamp.now(),
     });
@@ -282,12 +261,19 @@ export default function OrderDetailPage() {
       estadoText: 'En Camino',
       horaEnCamino: Timestamp.now(),
     });
-    await sendUserNotification({
-      userId: uidCliente,
-      title: 'Tu pedido va en camino',
-      body: `Pedido #${order?.numeroDeOrden || ''} está en ruta.`,
-      dataPayload: { orderId: id, status: 'EN_CAMINO' },
-    });
+    try {
+      const uidCliente = order?.userId || order?.userRef?.id || order?.uid;
+      if (uidCliente) {
+        await sendUserNotification({
+          userId: uidCliente,
+          title: 'Tu pedido va en camino',
+          body: `Pedido #${order?.numeroDeOrden || ''} está en ruta.`,
+          dataPayload: { orderId: id, status: 'EN_CAMINO' },
+        });
+      }
+    } catch (e) {
+      console.warn('No se pudo notificar al cliente (en camino):', e);
+    }
   };
 
   const entregarPedido = async () => {
@@ -297,12 +283,19 @@ export default function OrderDetailPage() {
       estadoFiltros: ['Todos', 'Entregados'],
       horaEntregado: Timestamp.now(),
     });
-    await sendUserNotification({
-      userId: uidCliente,
-      title: 'Pedido entregado',
-      body: `¡Gracias! Pedido #${order?.numeroDeOrden || ''} fue entregado.`,
-      dataPayload: { orderId: id, status: 'ENTREGADO' },
-    });
+    try {
+      const uidCliente = order?.userId || order?.userRef?.id || order?.uid;
+      if (uidCliente) {
+        await sendUserNotification({
+          userId: uidCliente,
+          title: 'Pedido entregado',
+          body: `¡Gracias! Pedido #${order?.numeroDeOrden || ''} fue entregado.`,
+          dataPayload: { orderId: id, status: 'ENTREGADO' },
+        });
+      }
+    } catch (e) {
+      console.warn('No se pudo notificar al cliente (entregado):', e);
+    }
   };
 
   const cancelarPedido = async () => {
@@ -316,25 +309,31 @@ export default function OrderDetailPage() {
       estadoFiltros: ['Todos', 'Cancelados'],
       horaCancelado: Timestamp.now(),
     });
-    await sendUserNotification({
-      userId: uidCliente,
-      title: 'Pedido cancelado',
-      body: `Pedido #${order?.numeroDeOrden || ''} ha sido cancelado.`,
-      dataPayload: { orderId: id, status: 'CANCELADO' },
-    });
+    try {
+      const uidCliente = order?.userId || order?.userRef?.id || order?.uid;
+      if (uidCliente) {
+        await sendUserNotification({
+          userId: uidCliente,
+          title: 'Pedido cancelado',
+          body: `Pedido #${order?.numeroDeOrden || ''} ha sido cancelado.`,
+          dataPayload: { orderId: id, status: 'CANCELADO' },
+        });
+      }
+    } catch (e) {
+      console.warn('No se pudo notificar al cliente (cancelado):', e);
+    }
   };
 
   // ===== Drivers =====
   const openDrivers = async () => {
     try {
       setDriversOpen(true);
-      // Trae drivers por ciudad
       const q = query(
         collection(db, 'users'),
-        where('role', '==', 'driver'),
         where('ciudad', '==', nombreCiudad),
         where('estado_driver', '==', true),
         where('es_repartidor', '==', true),
+        where('activo', '==', true),
         orderBy('display_name', 'asc')
       );
       const snap = await getDocs(q);
@@ -353,11 +352,30 @@ export default function OrderDetailPage() {
       alert('Selecciona un repartidor.');
       return;
     }
+
+    // Referencia al usuario repartidor
+    const driverRef = doc(db, 'users', driver.id);
+
     await updateOrder({
       driverId: driver.id,
       driverName: driver.display_name || driver.displayName || driver.name || driver.nombre || driver.email || 'Driver',
       driverCity: driver.ciudad || nombreCiudad,
+      asignadoRepartidor: true,
+      idUserRepartidor: driverRef, // DocumentReference<users>
     });
+
+    // Notificación al repartidor
+    try {
+      await sendUserNotification({
+        userId: driver.id,
+        title: 'Nueva entrega asignada',
+        body: `Te asignaron el pedido #${order?.numeroDeOrden || ''}`,
+        dataPayload: { orderId: id, role: 'driver', status: 'ASIGNADO' },
+      });
+    } catch (e) {
+      console.warn('No se pudo notificar al repartidor:', e);
+    }
+
     setDriversOpen(false);
   };
 
@@ -376,6 +394,9 @@ export default function OrderDetailPage() {
       notasItem: it?.notasItem || '',
     }));
     setItemsDraft(draft);
+    // limpiar búsqueda al abrir
+    setProdSearch('');
+    setProdResults([]);
     setEditOpen(true);
   };
 
@@ -433,12 +454,82 @@ export default function OrderDetailPage() {
     alert('Pago al driver guardado');
   };
 
+  // ===== Product search (tienda): name prefix + searchKeywords =====
+  const searchProducts = async () => {
+    const termRaw = (prodSearch || '').trim();
+    setProdResults([]);
+    if (termRaw.length < 6) return;
+
+    const term = termRaw.toLowerCase();
+    const tiendaIdText = order?.tiendaIdText || '';
+
+    try {
+      setSearchingProd(true);
+
+      // a) Prefijo por name (ordenado)
+      const qName = query(
+        collection(db, 'productos'),
+        where('uuidEmpresa', '==', tiendaIdText),
+        orderBy('name'),
+        where('name', '>=', termRaw),
+        where('name', '<=', termRaw + '\uf8ff'),
+        limit(20)
+      );
+
+      // b) searchKeywords (array-contains) en minúsculas
+      const qKW = query(
+        collection(db, 'productos'),
+        where('uuidEmpresa', '==', tiendaIdText),
+        where('searchKeywords', 'array-contains', term),
+        limit(20)
+      );
+
+      const [snapA, snapB] = await Promise.all([getDocs(qName), getDocs(qKW)]);
+      const rowsA = snapA.docs.map(d => ({ id: d.id, ...d.data() }));
+      const rowsB = snapB.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      // combinar únicos por id
+      const map = new Map();
+      [...rowsA, ...rowsB].forEach(p => map.set(p.id, p));
+      const combined = Array.from(map.values()).slice(0, 20);
+
+      setProdResults(combined);
+    } catch (e) {
+      console.error('Error buscando productos:', e);
+      alert('No se pudo buscar productos (revisa índices compuestos en Firestore).');
+    } finally {
+      setSearchingProd(false);
+    }
+  };
+
+  const addItemFromProduct = (p) => {
+    const priceBase = Number(p?.price ?? 0);
+    const priceSale = Number(p?.sale_price ?? 0);
+    const precioApp = priceSale > 0 ? priceSale : priceBase;
+    const precioTienda = priceBase;
+
+    const nuevo = {
+      nombreProducto: p?.name || '',
+      cantidad: 1,
+      precioUnitarioCalculadoApp: precioApp,
+      subtotalItemCalculadoApp: precioApp * 1,
+      precioUnitarioCalculadoTienda: precioTienda,
+      subtotalItemCalculadoTienda: precioTienda * 1,
+      imagenProductoUrl: p?.Imagen || '',
+      modificadoresSeleccionados: [],
+      extrasSeleccionados: [],
+      notasItem: '',
+    };
+
+    setItemsDraft(prev => [...prev, nuevo]);
+  };
+
   // ===== Visibility logic for buttons =====
   const canConfirm   = !order?.horaConfirmado;
   const canProcess   = !!order?.horaConfirmado && !order?.horaEnProceso;
   const canDispatch  = !!order?.horaEnProceso && !order?.horaDespachado;
   const canGoOnRoad  = !!order?.horaDespachado && !order?.horaEnCamino && !order?.horaEntregado && !order?.horaCancelado;
-  const canDeliver   = !!order?.horaDespachado && (!!order?.horaEnCamino || true) && !order?.horaEntregado && !order?.horaCancelado;
+  const canDeliver   = !!order?.horaDespachado && !order?.horaEntregado && !order?.horaCancelado;
   const canCancel    = !order?.horaEntregado;
 
   // ===== Render =====
@@ -737,6 +828,77 @@ export default function OrderDetailPage() {
       <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="lg" fullWidth>
         <DialogTitle>Editar ítems</DialogTitle>
         <DialogContent dividers>
+
+          {/* Búsqueda de productos de la tienda */}
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Agregar desde productos de la tienda (mín. 6 letras)
+            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <TextField
+                fullWidth
+                size="small"
+                label="Buscar producto por nombre"
+                value={prodSearch}
+                onChange={(e) => setProdSearch(e.target.value)}
+                placeholder="Escribe al menos 6 letras"
+              />
+              <Button variant="outlined" onClick={searchProducts} disabled={searchingProd}>
+                {searchingProd ? 'Buscando...' : 'Buscar'}
+              </Button>
+            </Stack>
+
+            {/* Resultados */}
+            {prodSearch.length >= 6 && (
+              <Paper variant="outlined" sx={{ mt: 1, maxHeight: 220, overflow: 'auto' }}>
+                {prodResults.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary" sx={{ p: 1.5 }}>
+                    {searchingProd ? 'Buscando…' : 'Sin resultados.'}
+                  </Typography>
+                ) : (
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Imagen</TableCell>
+                        <TableCell>Producto</TableCell>
+                        <TableCell>Precio</TableCell>
+                        <TableCell>Precio oferta</TableCell>
+                        <TableCell width={120} align="right">Añadir</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {prodResults.map(p => (
+                        <TableRow key={p.id} hover>
+                          <TableCell width={56}>
+                            <Avatar variant="rounded" src={p?.Imagen || ''} sx={{ width: 40, height: 40 }} />
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" fontWeight={600}>{p?.name || '-'}</Typography>
+                            {!!p?.description && (
+                              <Typography variant="caption" color="text.secondary">
+                                {String(p.description).slice(0, 80)}
+                              </Typography>
+                            )}
+                          </TableCell>
+                          <TableCell>L {Number(p?.price ?? 0).toFixed(2)}</TableCell>
+                          <TableCell>
+                            {Number(p?.sale_price ?? 0) > 0 ? `L ${Number(p.sale_price).toFixed(2)}` : '—'}
+                          </TableCell>
+                          <TableCell align="right">
+                            <Button size="small" variant="contained" onClick={() => addItemFromProduct(p)}>
+                              Agregar
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </Paper>
+            )}
+          </Box>
+
+          {/* Tabla para edición manual */}
           <Table size="small">
             <TableHead>
               <TableRow>
