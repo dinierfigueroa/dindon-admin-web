@@ -1,9 +1,12 @@
+// src/pages/OrderDetailPage.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   Box, Breadcrumbs, Typography, Paper, Chip, Grid, Divider, Avatar,
   Card, CardContent, Table, TableBody, TableCell, TableHead, TableRow,
-  TableContainer, Stack, Skeleton, Alert
+  TableContainer, Stack, Skeleton, Alert, Button, IconButton, TextField,
+  Dialog, DialogTitle, DialogContent, DialogActions, MenuItem, Select,
+  FormControl, InputLabel
 } from '@mui/material';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import StorefrontIcon from '@mui/icons-material/Storefront';
@@ -11,9 +14,25 @@ import PersonIcon from '@mui/icons-material/Person';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import CreditCardIcon from '@mui/icons-material/CreditCard';
 import LocalMallIcon from '@mui/icons-material/LocalMall';
-import { db } from '../firebase/config';
-import { doc, onSnapshot } from 'firebase/firestore';
+import AddIcon from '@mui/icons-material/Add';
+import EditIcon from '@mui/icons-material/Edit';
+import AssignmentIndIcon from '@mui/icons-material/AssignmentInd';
+import DoneIcon from '@mui/icons-material/Done';
+import LocalDiningIcon from '@mui/icons-material/LocalDining';
+import SendIcon from '@mui/icons-material/Send';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import CancelIcon from '@mui/icons-material/Cancel';
+import DirectionsBikeIcon from '@mui/icons-material/DirectionsBike';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
+// Firebase
+import { db } from '../firebase/config';
+import {
+  doc, onSnapshot, updateDoc, Timestamp,
+  collection, getDocs, query, where, orderBy, addDoc, serverTimestamp
+} from 'firebase/firestore';
+
+// ===== Helpers =====
 const currency = (n) =>
   typeof n === 'number'
     ? `L ${n.toFixed(2)}`
@@ -47,12 +66,14 @@ const EstadoChip = ({ estadoText, estadoBool }) => {
       ? 'info'
       : estadoText?.toLowerCase() === 'confirmado'
       ? 'primary'
-      : estadoText?.toLowerCase() === 'preparando'
+      : estadoText?.toLowerCase() === 'en proceso'
       ? 'warning'
       : estadoText?.toLowerCase() === 'en camino'
       ? 'secondary'
       : estadoText?.toLowerCase() === 'entregado'
       ? 'success'
+      : estadoText?.toLowerCase() === 'cancelado'
+      ? 'error'
       : estadoBool
       ? 'primary'
       : 'default';
@@ -89,12 +110,40 @@ const Badge = ({ label, value, icon }) => (
   </Stack>
 );
 
+function RowAmount({ label, value, strong = false, valueColor }) {
+  return (
+    <Stack direction="row" justifyContent="space-between" alignItems="center">
+      <Typography variant="body2" color="text.secondary">{label}</Typography>
+      <Typography variant="body2" fontWeight={strong ? 800 : 600} color={valueColor}>
+        {value}
+      </Typography>
+    </Stack>
+  );
+}
+
+// ===== Main Page =====
 export default function OrderDetailPage() {
-  const { id } = useParams();
+  const { id } = useParams(); // orders/{id}
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [saving, setSaving] = useState(false);
 
+  // Dialogs
+  const [editOpen, setEditOpen] = useState(false);
+  const [itemsDraft, setItemsDraft] = useState([]);
+  const [driversOpen, setDriversOpen] = useState(false);
+  const [drivers, setDrivers] = useState([]);
+  const [driverSel, setDriverSel] = useState('');
+  const [pagoDriverLocal, setPagoDriverLocal] = useState('');
+
+
+  const functions = getFunctions();
+  const sendStoreNotification = httpsCallable(functions, 'sendStoreNotification');
+  const sendUserNotification  = httpsCallable(functions, 'sendUserNotification');
+
+
+  // Load order realtime
   useEffect(() => {
     if (!id) return;
     const ref = doc(db, 'orders', id);
@@ -105,7 +154,9 @@ export default function OrderDetailPage() {
           setNotFound(true);
           setOrder(null);
         } else {
-          setOrder({ id: snap.id, ...snap.data() });
+          const data = { id: snap.id, ...snap.data() };
+          setOrder(data);
+          setPagoDriverLocal(data?.pagoDriver ?? '');
           setNotFound(false);
         }
         setLoading(false);
@@ -118,10 +169,15 @@ export default function OrderDetailPage() {
     return () => unsub();
   }, [id]);
 
-  const items = useMemo(() => Array.isArray(order?.itemsOrder) ? order.itemsOrder : [], [order]);
+  const items = useMemo(
+    () => (Array.isArray(order?.itemsOrder) ? order.itemsOrder : []),
+    [order]
+  );
   const shippingAddress = order?.shippingAddress || {};
   const datosRTN = order?.datosRTN || {};
+  const nombreCiudad = order?.nombreCiudad || '';
 
+  // Totales y ganancia
   const subTotal = Number(order?.subTotal ?? 0);
   const shipping = Number(order?.shipping ?? 0);
   const serviceFee = Number(order?.serviceFee ?? 0);
@@ -130,8 +186,277 @@ export default function OrderDetailPage() {
   const discount = Number(order?.discount ?? 0);
   const totalApp = Number(order?.totalApp ?? 0);
 
+  const costoPorItems = useMemo(() => {
+    return items.reduce(
+      (acc, it) => acc + Number(it?.subtotalItemCalculadoTienda ?? 0),
+      0
+    );
+  }, [items]);
+
+  const totalCosto = Number(
+    order?.totalCosto != null ? order.totalCosto : costoPorItems
+  );
+  const ganancia = totalApp - totalCosto;
+
+  // ===== Actions =====
+  const updateOrder = async (payload) => {
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'orders', id), payload);
+    } catch (e) {
+      console.error('Error al actualizar orden:', e);
+      alert('No se pudo actualizar la orden.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Notificación a la tienda: crea un doc en "notifications" para que tu backend/CF lo envíe como push
+  const notifyStoreNewOrder = async () => {
+    try {
+      const tiendaIdText = order?.tiendaIdText;
+      if (!tiendaIdText) return;
+
+      const q = query(collection(db, 'users'), where('uuidEmpresa', '==', tiendaIdText));
+      const snap = await getDocs(q);
+      const usersTienda = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const title = 'Nuevo pedido';
+      const body = `Tienes un nuevo pedido #${order?.numeroDeOrden || ''}`;
+
+      // Puedes cambiar a subcolección users/{id}/notifications si ya tienes CF escuchando ahí
+      const batchPromises = usersTienda.map(u =>
+        addDoc(collection(db, 'notifications'), {
+          userId: u.id,
+          title,
+          body,
+          orderId: id,
+          tiendaIdText,
+          createdAt: serverTimestamp(),
+          read: false,
+          type: 'ORDER_CONFIRMED',
+        })
+      );
+      await Promise.all(batchPromises);
+    } catch (err) {
+      console.error('No se pudo crear la notificación de tienda:', err);
+    }
+  };
+
+  const confirmarPedido = async () => {
+    await updateOrder({
+      estadoText: 'Confirmado',
+      horaConfirmado: Timestamp.now(),
+    });
+    // Notificar a la tienda
+    await sendStoreNotification({
+      orderId: id,
+      title: 'Nuevo pedido',
+      body: `Pedido #${order?.numeroDeOrden || ''} confirmado`,
+    });
+  };
+
+  const uidCliente = order?.userId || order?.userRef?.id || order?.uid;
+  const procesarPedido = async () => {
+    await updateOrder({
+      estadoText: 'En Proceso',
+      horaEnProceso: Timestamp.now(),
+    });
+    await sendUserNotification({
+      userId: uidCliente,
+      title: 'Tu pedido está en proceso',
+      body: `Pedido #${order?.numeroDeOrden || ''} está en preparación.`,
+      dataPayload: { orderId: id, status: 'EN_PROCESO' },
+    });
+  };
+
+  const despacharPedido = async () => {
+    // Solo marca la hora de despacho.
+    await updateOrder({
+      horaDespachado: Timestamp.now(),
+    });
+  };
+
+  const marcarEnCamino = async () => {
+    await updateOrder({
+      estadoText: 'En Camino',
+      horaEnCamino: Timestamp.now(),
+    });
+    await sendUserNotification({
+      userId: uidCliente,
+      title: 'Tu pedido va en camino',
+      body: `Pedido #${order?.numeroDeOrden || ''} está en ruta.`,
+      dataPayload: { orderId: id, status: 'EN_CAMINO' },
+    });
+  };
+
+  const entregarPedido = async () => {
+    await updateOrder({
+      estadoText: 'Entregado',
+      estadoBool: false,
+      estadoFiltros: ['Todos', 'Entregados'],
+      horaEntregado: Timestamp.now(),
+    });
+    await sendUserNotification({
+      userId: uidCliente,
+      title: 'Pedido entregado',
+      body: `¡Gracias! Pedido #${order?.numeroDeOrden || ''} fue entregado.`,
+      dataPayload: { orderId: id, status: 'ENTREGADO' },
+    });
+  };
+
+  const cancelarPedido = async () => {
+    if (order?.horaEntregado) {
+      alert('Este pedido ya fue entregado; no se puede cancelar.');
+      return;
+    }
+    await updateOrder({
+      estadoText: 'Cancelado',
+      estadoBool: false,
+      estadoFiltros: ['Todos', 'Cancelados'],
+      horaCancelado: Timestamp.now(),
+    });
+    await sendUserNotification({
+      userId: uidCliente,
+      title: 'Pedido cancelado',
+      body: `Pedido #${order?.numeroDeOrden || ''} ha sido cancelado.`,
+      dataPayload: { orderId: id, status: 'CANCELADO' },
+    });
+  };
+
+  // ===== Drivers =====
+  const openDrivers = async () => {
+    try {
+      setDriversOpen(true);
+      // Trae drivers por ciudad
+      const q = query(
+        collection(db, 'users'),
+        where('role', '==', 'driver'),
+        where('ciudad', '==', nombreCiudad),
+        where('estado_driver', '==', 'true'),
+        orderBy('displayName', 'asc')
+      );
+      const snap = await getDocs(q);
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setDrivers(list);
+      if (order?.driverId) setDriverSel(order.driverId);
+    } catch (e) {
+      console.error('Error cargando drivers:', e);
+      alert('No se pudieron cargar los repartidores.');
+    }
+  };
+
+  const assignDriver = async () => {
+    const driver = drivers.find((d) => d.id === driverSel);
+    if (!driver) {
+      alert('Selecciona un repartidor.');
+      return;
+    }
+    await updateOrder({
+      driverId: driver.id,
+      driverName: driver.displayName || driver.name || driver.nombre || driver.email || 'Driver',
+      driverCity: driver.ciudad || nombreCiudad,
+    });
+    setDriversOpen(false);
+  };
+
+  // ===== Edit items =====
+  const openEditItems = () => {
+    const draft = (Array.isArray(order?.itemsOrder) ? order.itemsOrder : []).map((it) => ({
+      nombreProducto: it?.nombreProducto || '',
+      cantidad: Number(it?.cantidad ?? 1),
+      precioUnitarioCalculadoApp: Number(it?.precioUnitarioCalculadoApp ?? 0),
+      subtotalItemCalculadoApp: Number(it?.subtotalItemCalculadoApp ?? 0),
+      precioUnitarioCalculadoTienda: Number(it?.precioUnitarioCalculadoTienda ?? 0),
+      subtotalItemCalculadoTienda: Number(it?.subtotalItemCalculadoTienda ?? 0),
+      imagenProductoUrl: it?.imagenProductoUrl || '',
+      modificadoresSeleccionados: it?.modificadoresSeleccionados || [],
+      extrasSeleccionados: it?.extrasSeleccionados || [],
+      notasItem: it?.notasItem || '',
+    }));
+    setItemsDraft(draft);
+    setEditOpen(true);
+  };
+
+  const addDraftItem = () => {
+    setItemsDraft((prev) => [
+      ...prev,
+      {
+        nombreProducto: '',
+        cantidad: 1,
+        precioUnitarioCalculadoApp: 0,
+        subtotalItemCalculadoApp: 0,
+        precioUnitarioCalculadoTienda: 0,
+        subtotalItemCalculadoTienda: 0,
+        imagenProductoUrl: '',
+        modificadoresSeleccionados: [],
+        extrasSeleccionados: [],
+        notasItem: '',
+      },
+    ]);
+  };
+
+  const changeDraft = (idx, field, value) => {
+    setItemsDraft((prev) => {
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], [field]: value };
+      if (['cantidad', 'precioUnitarioCalculadoApp', 'precioUnitarioCalculadoTienda'].includes(field)) {
+        const c = Number(copy[idx].cantidad || 0);
+        const pA = Number(copy[idx].precioUnitarioCalculadoApp || 0);
+        const pT = Number(copy[idx].precioUnitarioCalculadoTienda || 0);
+        copy[idx].subtotalItemCalculadoApp = pA * c;
+        copy[idx].subtotalItemCalculadoTienda = pT * c;
+      }
+      return copy;
+    });
+  };
+
+  const saveItems = async () => {
+    const newSubApp = itemsDraft.reduce((acc, it) => acc + Number(it.subtotalItemCalculadoApp || 0), 0);
+    const newCosto = itemsDraft.reduce((acc, it) => acc + Number(it.subtotalItemCalculadoTienda || 0), 0);
+    const newTotalApp = newSubApp + shipping + serviceFee + priorityDelivery + tip - discount;
+
+    await updateOrder({
+      itemsOrder: itemsDraft,
+      subTotal: newSubApp,
+      totalCosto: newCosto,
+      totalApp: newTotalApp,
+    });
+    setEditOpen(false);
+  };
+
+  const savePagoDriver = async () => {
+    await updateOrder({ pagoDriver: pagoDriverLocal });
+  };
+
+  // ===== Visibility logic for buttons =====
+  const canConfirm   = !order?.horaConfirmado;
+  const canProcess   = !!order?.horaConfirmado && !order?.horaEnProceso;
+  const canDispatch  = !!order?.horaEnProceso && !order?.horaDespachado;
+  const canGoOnRoad  = !!order?.horaDespachado && !order?.horaEnCamino && !order?.horaEntregado && !order?.horaCancelado;
+  const canDeliver   = !!order?.horaDespachado && (!!order?.horaEnCamino || true) && !order?.horaEntregado && !order?.horaCancelado;
+  const canCancel    = !order?.horaEntregado;
+
+  // ===== Render =====
+  if (loading) {
+    return (
+      <Box p={2}>
+        <Skeleton variant="rectangular" height={120} />
+      </Box>
+    );
+  }
+
+  if (notFound || !order) {
+    return (
+      <Box p={2}>
+        <Alert severity="warning">No se encontró la orden solicitada.</Alert>
+      </Box>
+    );
+  }
+
   return (
     <Box p={2}>
+      {/* Breadcrumbs */}
       <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />} sx={{ mb: 2 }}>
         <Link to="/ordenes" style={{ textDecoration: 'none' }}>
           <Typography color="text.secondary">Órdenes</Typography>
@@ -139,51 +464,81 @@ export default function OrderDetailPage() {
         <Typography color="text.primary">Detalle</Typography>
       </Breadcrumbs>
 
+      {/* Header */}
       <Paper sx={{ p: 2, mb: 2 }}>
-        {loading ? (
-          <Stack direction="row" spacing={2} alignItems="center">
-            <Skeleton variant="circular" width={40} height={40} />
-            <Skeleton variant="text" width={240} />
-            <Skeleton variant="rectangular" width={120} height={28} />
-          </Stack>
-        ) : notFound ? (
-          <Alert severity="warning">No se encontró la orden solicitada.</Alert>
-        ) : (
-          <Grid container spacing={2} alignItems="center">
-            <Grid item>
-              <Avatar variant="rounded">
-                <LocalMallIcon />
-              </Avatar>
-            </Grid>
-            <Grid item xs={12} sm="auto">
-              <Typography variant="h6" fontWeight={700}>
-                Orden #{order?.numeroDeOrden ?? '—'}
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                <EstadoChip estadoText={order?.estadoText} estadoBool={order?.estadoBool} />
-                <MetodoChip metodo={order?.metodoDePago} />
-                <Chip label={order?.nombreCiudad || '—'} size="small" variant="outlined" />
-              </Stack>
-            </Grid>
-            <Grid item xs />
-            <Grid item>
-              <Stack spacing={0.5} alignItems="flex-end">
-                <Typography variant="body2" color="text.secondary">Creada:</Typography>
-                <Typography variant="body2" fontWeight={600}>
-                  {formatDateTime(order?.createdAt)}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">ID doc: {order?.id}</Typography>
-                {order?.idOrderText && (
-                  <Typography variant="caption" color="text.secondary">
-                    Payment UUID: {order?.idOrderText}
-                  </Typography>
-                )}
-              </Stack>
-            </Grid>
+        <Grid container spacing={2} alignItems="center">
+          <Grid item>
+            <Avatar variant="rounded"><LocalMallIcon /></Avatar>
           </Grid>
-        )}
+          <Grid item xs={12} sm="auto">
+            <Typography variant="h6" fontWeight={700}>
+              Orden #{order?.numeroDeOrden ?? '—'}
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap">
+              <EstadoChip estadoText={order?.estadoText} estadoBool={order?.estadoBool} />
+              <MetodoChip metodo={order?.metodoDePago} />
+              <Chip label={order?.nombreCiudad || '—'} size="small" variant="outlined" />
+            </Stack>
+          </Grid>
+          <Grid item xs />
+          <Grid item>
+            <Stack spacing={0.5} alignItems="flex-end">
+              <Typography variant="body2" color="text.secondary">Creada:</Typography>
+              <Typography variant="body2" fontWeight={600}>
+                {formatDateTime(order?.createdAt)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">ID doc: {order?.id}</Typography>
+              {order?.idOrderText && (
+                <Typography variant="caption" color="text.secondary">
+                  Payment UUID: {order?.idOrderText}
+                </Typography>
+              )}
+            </Stack>
+          </Grid>
+        </Grid>
+
+        {/* Action buttons */}
+        <Stack direction="row" spacing={1} mt={2} flexWrap="wrap">
+          {canConfirm && (
+            <Button onClick={confirmarPedido} variant="contained" startIcon={<DoneIcon />} disabled={saving}>
+              Confirmar pedido
+            </Button>
+          )}
+          {canProcess && (
+            <Button onClick={procesarPedido} variant="outlined" startIcon={<LocalDiningIcon />} disabled={saving}>
+              Procesar pedido
+            </Button>
+          )}
+          {canDispatch && (
+            <Button onClick={despacharPedido} variant="outlined" startIcon={<SendIcon />} disabled={saving}>
+              Despachar pedido
+            </Button>
+          )}
+          {canGoOnRoad && (
+            <Button onClick={marcarEnCamino} variant="outlined" startIcon={<DirectionsBikeIcon />} disabled={saving}>
+              En Camino
+            </Button>
+          )}
+          {canDeliver && (
+            <Button onClick={entregarPedido} color="success" variant="contained" startIcon={<CheckCircleIcon />} disabled={saving}>
+              Entregar pedido
+            </Button>
+          )}
+          {canCancel && (
+            <Button onClick={cancelarPedido} color="error" variant="outlined" startIcon={<CancelIcon />} disabled={saving}>
+              Cancelar pedido
+            </Button>
+          )}
+          <Button onClick={openDrivers} variant="outlined" startIcon={<AssignmentIndIcon />} disabled={saving}>
+            Asignar repartidor
+          </Button>
+          <Button onClick={openEditItems} variant="text" startIcon={<EditIcon />} disabled={saving}>
+            Editar ítems
+          </Button>
+        </Stack>
       </Paper>
 
+      {/* Top info cards */}
       <Grid container spacing={2}>
         <Grid item xs={12} md={4}>
           <Card>
@@ -192,21 +547,14 @@ export default function OrderDetailPage() {
                 <StorefrontIcon />
                 <Typography variant="subtitle1" fontWeight={700}>Negocio</Typography>
               </Stack>
-              {loading ? (
-                <>
-                  <Skeleton width="60%" />
-                  <Skeleton width="40%" />
-                </>
-              ) : (
-                <Stack spacing={1}>
-                  <Badge
-                    label="Nombre"
-                    value={order?.nombreEmpresa}
-                    icon={<Avatar sx={{ width: 20, height: 20 }} src={order?.logoEmpresa} />}
-                  />
-                  <Badge label="UUID Empresa" value={order?.tiendaIdText} icon={<></>} />
-                </Stack>
-              )}
+              <Stack spacing={1}>
+                <Badge
+                  label="Nombre"
+                  value={order?.nombreEmpresa}
+                  icon={<Avatar sx={{ width: 20, height: 20 }} src={order?.logoEmpresa} />}
+                />
+                <Badge label="UUID Empresa" value={order?.tiendaIdText} icon={<></>} />
+              </Stack>
             </CardContent>
           </Card>
         </Grid>
@@ -218,29 +566,11 @@ export default function OrderDetailPage() {
                 <PersonIcon />
                 <Typography variant="subtitle1" fontWeight={700}>Cliente</Typography>
               </Stack>
-              {loading ? (
-                <>
-                  <Skeleton width="70%" />
-                  <Skeleton width="50%" />
-                </>
-              ) : (
-                <Stack spacing={1}>
-                  <Badge label="Nombre" value={order?.nameCliente} icon={<></>} />
-                  <Badge label="Teléfono" value={order?.telefonoPrincipal} icon={<></>} />
-                  {order?.discountCoupon && (
-                    <Badge label="Cupón" value={order?.discountCoupon} icon={<></>} />
-                  )}
-                  {order?.conRTN && (
-                    <>
-                      <Divider sx={{ my: 1 }} />
-                      <Typography variant="caption" color="text.secondary">Facturación RTN</Typography>
-                      <Typography variant="body2">{datosRTN?.nombreRTN || '—'}</Typography>
-                      <Typography variant="body2">RTN: {datosRTN?.numeroRTN || '—'}</Typography>
-                      <Typography variant="body2">Correo: {datosRTN?.correoElectronico || '—'}</Typography>
-                    </>
-                  )}
-                </Stack>
-              )}
+              <Stack spacing={1}>
+                <Badge label="Nombre" value={order?.nameCliente} icon={<></>} />
+                <Badge label="Teléfono" value={order?.telefonoPrincipal} icon={<></>} />
+                {order?.discountCoupon && (<Badge label="Cupón" value={order?.discountCoupon} icon={<></>} />)}
+              </Stack>
             </CardContent>
           </Card>
         </Grid>
@@ -252,137 +582,143 @@ export default function OrderDetailPage() {
                 <LocalShippingIcon />
                 <Typography variant="subtitle1" fontWeight={700}>Entrega & Pago</Typography>
               </Stack>
-              {loading ? (
-                <>
-                  <Skeleton width="80%" />
-                  <Skeleton width="60%" />
-                </>
-              ) : (
-                <Stack spacing={1}>
-                  <Badge label="Entrega" value={order?.formaDeEntrega} icon={<></>} />
-                  <Badge label="Método de pago" value={order?.metodoDePago} icon={<CreditCardIcon fontSize="small" />} />
-                  {order?.tarjetaUsada && (
-                    <Typography variant="body2">Tarjeta: **** **** **** {order?.tarjetaUsada}</Typography>
-                  )}
-                  {order?.conEntregaPrioritaria && <Chip size="small" color="warning" label="Entrega prioritaria" />}
-                  {order?.note && <Typography variant="body2"><strong>Nota:</strong> {order?.note}</Typography>}
-                </Stack>
-              )}
+              <Stack spacing={1}>
+                <Badge label="Entrega" value={order?.formaDeEntrega} icon={<></>} />
+                <Badge label="Método de pago" value={order?.metodoDePago} icon={<CreditCardIcon fontSize="small" />} />
+                {order?.tarjetaUsada && (<Typography variant="body2">Tarjeta: **** **** **** {order?.tarjetaUsada}</Typography>)}
+                {order?.conEntregaPrioritaria && <Chip size="small" color="warning" label="Entrega prioritaria" />}
+                {order?.note && <Typography variant="body2"><strong>Nota:</strong> {order?.note}</Typography>}
+              </Stack>
             </CardContent>
           </Card>
         </Grid>
       </Grid>
 
+      {/* Dirección */}
       <Paper sx={{ p: 2, mt: 2 }}>
         <Typography variant="subtitle1" fontWeight={700} gutterBottom>
           Dirección de {order?.formaDeEntrega === 'Domicilio' ? 'envío' : 'recogido'}
         </Typography>
-        {loading ? (
-          <>
-            <Skeleton width="40%" />
-            <Skeleton width="70%" />
-            <Skeleton width="50%" />
-          </>
-        ) : (
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <Stack spacing={0.5}>
-                <Typography variant="body2"><strong>Alias:</strong> {shippingAddress?.alias || '—'}</Typography>
-                <Typography variant="body2"><strong>Ciudad:</strong> {shippingAddress?.ciudad || order?.nombreCiudad || '—'}</Typography>
-                <Typography variant="body2"><strong>Dirección:</strong> {shippingAddress?.fullAddress || '—'}</Typography>
-                {shippingAddress?.colonia && <Typography variant="body2"><strong>Colonia:</strong> {shippingAddress.colonia}</Typography>}
-                {shippingAddress?.telefono && <Typography variant="body2"><strong>Teléfono:</strong> {shippingAddress.telefono}</Typography>}
-              </Stack>
-            </Grid>
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={6}>
+            <Stack spacing={0.5}>
+              <Typography variant="body2"><strong>Alias:</strong> {shippingAddress?.alias || '—'}</Typography>
+              <Typography variant="body2"><strong>Ciudad:</strong> {shippingAddress?.ciudad || order?.nombreCiudad || '—'}</Typography>
+              <Typography variant="body2"><strong>Dirección:</strong> {shippingAddress?.fullAddress || '—'}</Typography>
+              {shippingAddress?.colonia && <Typography variant="body2"><strong>Colonia:</strong> {shippingAddress.colonia}</Typography>}
+              {shippingAddress?.telefono && <Typography variant="body2"><strong>Teléfono:</strong> {shippingAddress.telefono}</Typography>}
+            </Stack>
           </Grid>
-        )}
+        </Grid>
       </Paper>
 
+      {/* Ítems */}
       <Paper sx={{ p: 2, mt: 2 }}>
         <Stack direction="row" spacing={1} alignItems="center" mb={1}>
           <Typography variant="subtitle1" fontWeight={700}>Ítems del pedido</Typography>
           <Chip size="small" label={`${items.length} ítem(s)`} />
         </Stack>
 
-        {loading ? (
-          <Skeleton variant="rectangular" height={180} />
-        ) : (
-          <TableContainer>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Cant.</TableCell>
-                  <TableCell>Producto</TableCell>
-                  <TableCell>Precio (App)</TableCell>
-                  <TableCell>Subtotal (App)</TableCell>
-                  <TableCell align="right">Precio (Tienda)</TableCell>
-                  <TableCell align="right">Subtotal (Tienda)</TableCell>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell> </TableCell>
+                <TableCell>Cant.</TableCell>
+                <TableCell>Producto</TableCell>
+                <TableCell>Precio (App)</TableCell>
+                <TableCell>Subtotal (App)</TableCell>
+                <TableCell align="right">Precio (Tienda)</TableCell>
+                <TableCell align="right">Subtotal (Tienda)</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {items.map((it, idx) => (
+                <TableRow key={idx}>
+                  <TableCell width={56}>
+                    <Avatar
+                      variant="rounded"
+                      src={it?.imagenProductoUrl || ''}
+                      alt={it?.nombreProducto || 'producto'}
+                      sx={{ width: 40, height: 40 }}
+                    />
+                  </TableCell>
+                  <TableCell>{it?.cantidad ?? 1}</TableCell>
+                  <TableCell>
+                    <Stack spacing={0.5}>
+                      <Typography variant="body2" fontWeight={600}>{it?.nombreProducto || '—'}</Typography>
+                      {!!(it?.modificadoresSeleccionados?.length) && (
+                        <Typography variant="caption" color="text.secondary">
+                          Modificadores: {it.modificadoresSeleccionados.map((m) => m?.nombre || m).join(', ')}
+                        </Typography>
+                      )}
+                      {!!(it?.extrasSeleccionados?.length) && (
+                        <Typography variant="caption" color="text.secondary">
+                          Extras: {it.extrasSeleccionados.map((e) => e?.nombre || e).join(', ')}
+                        </Typography>
+                      )}
+                      {it?.notasItem && (<Typography variant="caption" color="text.secondary">Nota: {it.notasItem}</Typography>)}
+                    </Stack>
+                  </TableCell>
+                  <TableCell>{currency(it?.precioUnitarioCalculadoApp ?? 0)}</TableCell>
+                  <TableCell>{currency(it?.subtotalItemCalculadoApp ?? 0)}</TableCell>
+                  <TableCell align="right">{currency(it?.precioUnitarioCalculadoTienda ?? 0)}</TableCell>
+                  <TableCell align="right">{currency(it?.subtotalItemCalculadoTienda ?? 0)}</TableCell>
                 </TableRow>
-              </TableHead>
-              <TableBody>
-                {items.map((it, idx) => (
-                  <TableRow key={idx}>
-                    <TableCell>{it?.cantidad ?? 1}</TableCell>
-                    <TableCell>
-                      <Stack spacing={0.5}>
-                        <Typography variant="body2" fontWeight={600}>{it?.nombreProducto || '—'}</Typography>
-                        {!!(it?.modificadoresSeleccionados?.length) && (
-                          <Typography variant="caption" color="text.secondary">
-                            Modificadores: {it.modificadoresSeleccionados.map((m) => m?.nombre || m).join(', ')}
-                          </Typography>
-                        )}
-                        {!!(it?.extrasSeleccionados?.length) && (
-                          <Typography variant="caption" color="text.secondary">
-                            Extras: {it.extrasSeleccionados.map((e) => e?.nombre || e).join(', ')}
-                          </Typography>
-                        )}
-                        {it?.notasItem && (
-                          <Typography variant="caption" color="text.secondary">Nota: {it.notasItem}</Typography>
-                        )}
-                      </Stack>
-                    </TableCell>
-                    <TableCell>{currency(it?.precioUnitarioCalculadoApp ?? 0)}</TableCell>
-                    <TableCell>{currency(it?.subtotalItemCalculadoApp ?? 0)}</TableCell>
-                    <TableCell align="right">{currency(it?.precioUnitarioCalculadoTienda ?? 0)}</TableCell>
-                    <TableCell align="right">{currency(it?.subtotalItemCalculadoTienda ?? 0)}</TableCell>
-                  </TableRow>
-                ))}
-                {items.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6}>
-                      <Typography variant="body2" color="text.secondary">No hay ítems en este pedido.</Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        )}
+              ))}
+              {items.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7}>
+                    <Typography variant="body2" color="text.secondary">No hay ítems en este pedido.</Typography>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
       </Paper>
 
+      {/* Totales + Ganancia + pagoDriver */}
       <Paper sx={{ p: 2, mt: 2 }}>
-        <Grid container>
+        <Grid container spacing={2}>
           <Grid item xs={12} md={6}>
             <Typography variant="subtitle1" fontWeight={700} gutterBottom>Resumen de pago</Typography>
-            {loading ? (
-              <Skeleton variant="rectangular" height={120} />
-            ) : (
-              <Stack spacing={0.75} maxWidth={420}>
-                <RowAmount label="Subtotal" value={currency(subTotal)} />
-                <RowAmount label="Envío" value={currency(shipping)} />
-                <RowAmount label="Service fee" value={currency(serviceFee)} />
-                {order?.conEntregaPrioritaria && <RowAmount label="Entrega prioritaria" value={currency(priorityDelivery)} />}
-                {tip > 0 && <RowAmount label="Propina" value={currency(tip)} />}
-                {discount > 0 && <RowAmount label="Descuento" value={`- ${currency(discount)}`} valueColor="error.main" />}
-                <Divider sx={{ my: 1 }} />
-                <RowAmount label="Total" value={currency(totalApp)} strong />
+            <Stack spacing={0.75} maxWidth={420}>
+              <RowAmount label="Subtotal" value={currency(subTotal)} />
+              <RowAmount label="Envío" value={currency(shipping)} />
+              <RowAmount label="Service fee" value={currency(serviceFee)} />
+              {order?.conEntregaPrioritaria && <RowAmount label="Entrega prioritaria" value={currency(priorityDelivery)} />}
+              {tip > 0 && <RowAmount label="Propina" value={currency(tip)} />}
+              {discount > 0 && <RowAmount label="Descuento" value={`- ${currency(discount)}`} valueColor="error.main" />}
+              <Divider sx={{ my: 1 }} />
+              <RowAmount label="Total" value={currency(totalApp)} strong />
+            </Stack>
+          </Grid>
+
+          <Grid item xs={12} md={6}>
+            <Typography variant="subtitle1" fontWeight={700} gutterBottom>Administrativo</Typography>
+            <Stack spacing={1} maxWidth={420}>
+              <RowAmount label="Costo productos (tienda)" value={currency(totalCosto)} />
+              <RowAmount label="Ganancia (Total - Costo)" value={currency(ganancia)} strong />
+              <Stack direction="row" spacing={1} alignItems="center">
+                <TextField
+                  label="Pago al driver (L)"
+                  size="small"
+                  value={pagoDriverLocal}
+                  onChange={(e) => setPagoDriverLocal(e.target.value)}
+                  fullWidth
+                  inputMode="decimal"
+                />
+                <Button onClick={savePagoDriver} variant="contained" disabled={saving}>
+                  Guardar
+                </Button>
               </Stack>
-            )}
+            </Stack>
           </Grid>
         </Grid>
       </Paper>
 
-      {!loading && (order?.estadoFiltros?.length > 0) && (
+      {!!(order?.estadoFiltros?.length) && (
         <Paper sx={{ p: 2, mt: 2 }}>
           <Typography variant="subtitle1" fontWeight={700} gutterBottom>Filtros de estado</Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap">
@@ -392,15 +728,129 @@ export default function OrderDetailPage() {
           </Stack>
         </Paper>
       )}
-    </Box>
-  );
-}
 
-function RowAmount({ label, value, strong = false, valueColor }) {
-  return (
-    <Stack direction="row" justifyContent="space-between" alignItems="center">
-      <Typography variant="body2" color="text.secondary">{label}</Typography>
-      <Typography variant="body2" fontWeight={strong ? 800 : 600} color={valueColor}>{value}</Typography>
-    </Stack>
+      {/* Dialog: Editar ítems */}
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="lg" fullWidth>
+        <DialogTitle>Editar ítems</DialogTitle>
+        <DialogContent dividers>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Producto</TableCell>
+                <TableCell>Cant.</TableCell>
+                <TableCell>Precio (App)</TableCell>
+                <TableCell>Subtotal (App)</TableCell>
+                <TableCell>Precio (Tienda)</TableCell>
+                <TableCell>Subtotal (Tienda)</TableCell>
+                <TableCell>Imagen URL</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {itemsDraft.map((it, idx) => (
+                <TableRow key={idx}>
+                  <TableCell>
+                    <TextField
+                      value={it.nombreProducto}
+                      onChange={(e) => changeDraft(idx, 'nombreProducto', e.target.value)}
+                      size="small"
+                      fullWidth
+                    />
+                  </TableCell>
+                  <TableCell width={90}>
+                    <TextField
+                      value={it.cantidad}
+                      onChange={(e) => changeDraft(idx, 'cantidad', Number(e.target.value || 0))}
+                      size="small"
+                      type="number"
+                      inputProps={{ min: 0 }}
+                      fullWidth
+                    />
+                  </TableCell>
+                  <TableCell width={140}>
+                    <TextField
+                      value={it.precioUnitarioCalculadoApp}
+                      onChange={(e) => changeDraft(idx, 'precioUnitarioCalculadoApp', Number(e.target.value || 0))}
+                      size="small"
+                      type="number"
+                      fullWidth
+                    />
+                  </TableCell>
+                  <TableCell width={140}>
+                    <TextField
+                      value={it.subtotalItemCalculadoApp}
+                      size="small"
+                      InputProps={{ readOnly: true }}
+                      fullWidth
+                    />
+                  </TableCell>
+                  <TableCell width={140}>
+                    <TextField
+                      value={it.precioUnitarioCalculadoTienda}
+                      onChange={(e) => changeDraft(idx, 'precioUnitarioCalculadoTienda', Number(e.target.value || 0))}
+                      size="small"
+                      type="number"
+                      fullWidth
+                    />
+                  </TableCell>
+                  <TableCell width={140}>
+                    <TextField
+                      value={it.subtotalItemCalculadoTienda}
+                      size="small"
+                      InputProps={{ readOnly: true }}
+                      fullWidth
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <TextField
+                      value={it.imagenProductoUrl}
+                      onChange={(e) => changeDraft(idx, 'imagenProductoUrl', e.target.value)}
+                      size="small"
+                      fullWidth
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          <Button onClick={addDraftItem} startIcon={<AddIcon />} sx={{ mt: 1 }}>
+            Añadir ítem
+          </Button>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditOpen(false)}>Cancelar</Button>
+          <Button variant="contained" onClick={saveItems} disabled={saving}>
+            Guardar cambios
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog: Asignar repartidor */}
+      <Dialog open={driversOpen} onClose={() => setDriversOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Asignar repartidor ({nombreCiudad})</DialogTitle>
+        <DialogContent dividers>
+          <FormControl fullWidth>
+            <InputLabel>Repartidor</InputLabel>
+            <Select
+              label="Repartidor"
+              value={driverSel}
+              onChange={(e) => setDriverSel(e.target.value)}
+            >
+              {drivers.map((d) => (
+                <MenuItem key={d.id} value={d.id}>
+                  {d.displayName || d.name || d.nombre || d.email || d.id}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDriversOpen(false)}>Cerrar</Button>
+          <Button onClick={assignDriver} variant="contained" disabled={saving}>
+            Asignar
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
   );
 }
